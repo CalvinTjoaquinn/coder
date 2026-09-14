@@ -21614,14 +21614,16 @@ const docTemplate = `{
                 "running",
                 "error",
                 "requires_action",
-                "interrupting"
+                "interrupting",
+                "paused"
             ],
             "x-enum-varnames": [
                 "ChatStatusWaiting",
                 "ChatStatusRunning",
                 "ChatStatusError",
                 "ChatStatusRequiresAction",
-                "ChatStatusInterrupting"
+                "ChatStatusInterrupting",
+                "ChatStatusPaused"
             ]
         },
         "codersdk.ChatStreamActionRequired": {
