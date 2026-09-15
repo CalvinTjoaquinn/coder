@@ -82,6 +82,7 @@ curl -X GET http://coder-server:8080/api/v2/chats \
         {
           "error": "string",
           "kind": "instruction_file",
+          "plugin_name": "string",
           "size_bytes": 0,
           "skill_description": "string",
           "skill_name": "string",
@@ -214,6 +215,7 @@ Status Code **200**
 | `»» resources`             | array                                                                              | false    |              | Resources is the chat's pinned context (instruction files and skills) the prompt is built from, metadata only (no bodies). It is populated only on the single-chat GET response; list and watch payloads leave it nil to stay lightweight.                                 |
 | `»»» error`                | string                                                                             | false    |              | Error explains a non-ok Status; empty when healthy. May also carry a non-fatal warning when Status is ok.                                                                                                                                                                  |
 | `»»» kind`                 | [codersdk.ChatContextResourceKind](schemas.md#codersdkchatcontextresourcekind)     | false    |              |                                                                                                                                                                                                                                                                            |
+| `»»» plugin_name`          | string                                                                             | false    |              | Plugin name is the owning Agent Plugin's name. It is the manifest name for the plugin kind and the attributing plugin for skill and mcp_server kinds shipped inside a plugin; empty otherwise.                                                                             |
 | `»»» size_bytes`           | integer                                                                            | false    |              | Size bytes is the original payload size in bytes.                                                                                                                                                                                                                          |
 | `»»» skill_description`    | string                                                                             | false    |              |                                                                                                                                                                                                                                                                            |
 | `»»» skill_name`           | string                                                                             | false    |              | Skill name and SkillDescription are populated only for skill kinds.                                                                                                                                                                                                        |
@@ -296,12 +298,12 @@ Status Code **200**
 
 #### Enumerated Values
 
-| Property      | Value(s)                                                                                                                                                                                                                                                          |
-|---------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `client_type` | `api`, `ui`                                                                                                                                                                                                                                                       |
-| `kind`        | `auth`, `config`, `content_filter`, `generic`, `hook_denied`, `hook_dispatch_failed`, `instruction_file`, `mcp_config`, `mcp_server`, `missing_key`, `overloaded`, `provider_disabled`, `rate_limit`, `skill`, `stream_silence_timeout`, `timeout`, `usage_limit` |
-| `status`      | `error`, `excluded`, `interrupting`, `invalid`, `ok`, `oversize`, `requires_action`, `running`, `unreadable`, `waiting`                                                                                                                                           |
-| `plan_mode`   | `plan`                                                                                                                                                                                                                                                            |
+| Property      | Value(s)                                                                                                                                                                                                                                                                    |
+|---------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `client_type` | `api`, `ui`                                                                                                                                                                                                                                                                 |
+| `kind`        | `auth`, `config`, `content_filter`, `generic`, `hook_denied`, `hook_dispatch_failed`, `instruction_file`, `mcp_config`, `mcp_server`, `missing_key`, `overloaded`, `plugin`, `provider_disabled`, `rate_limit`, `skill`, `stream_silence_timeout`, `timeout`, `usage_limit` |
+| `status`      | `error`, `excluded`, `interrupting`, `invalid`, `ok`, `oversize`, `requires_action`, `running`, `unreadable`, `waiting`                                                                                                                                                     |
+| `plan_mode`   | `plan`                                                                                                                                                                                                                                                                      |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -414,6 +416,7 @@ curl -X POST http://coder-server:8080/api/v2/chats \
           {
             "error": "string",
             "kind": "instruction_file",
+            "plugin_name": "string",
             "size_bytes": 0,
             "skill_description": "string",
             "skill_name": "string",
@@ -528,6 +531,7 @@ curl -X POST http://coder-server:8080/api/v2/chats \
       {
         "error": "string",
         "kind": "instruction_file",
+        "plugin_name": "string",
         "size_bytes": 0,
         "skill_description": "string",
         "skill_name": "string",
@@ -1396,6 +1400,7 @@ curl -X GET http://coder-server:8080/api/v2/chats/watch \
         {
           "error": "string",
           "kind": "instruction_file",
+          "plugin_name": "string",
           "size_bytes": 0,
           "skill_description": "string",
           "skill_name": "string",
@@ -1562,6 +1567,7 @@ curl -X GET http://coder-server:8080/api/v2/chats/{chat} \
           {
             "error": "string",
             "kind": "instruction_file",
+            "plugin_name": "string",
             "size_bytes": 0,
             "skill_description": "string",
             "skill_name": "string",
@@ -1676,6 +1682,7 @@ curl -X GET http://coder-server:8080/api/v2/chats/{chat} \
       {
         "error": "string",
         "kind": "instruction_file",
+        "plugin_name": "string",
         "size_bytes": 0,
         "skill_description": "string",
         "skill_name": "string",
@@ -1878,6 +1885,7 @@ curl -X PUT http://coder-server:8080/api/v2/chats/{chat}/context \
           {
             "error": "string",
             "kind": "instruction_file",
+            "plugin_name": "string",
             "size_bytes": 0,
             "skill_description": "string",
             "skill_name": "string",
@@ -1992,6 +2000,7 @@ curl -X PUT http://coder-server:8080/api/v2/chats/{chat}/context \
       {
         "error": "string",
         "kind": "instruction_file",
+        "plugin_name": "string",
         "size_bytes": 0,
         "skill_description": "string",
         "skill_name": "string",
@@ -2241,6 +2250,7 @@ curl -X POST http://coder-server:8080/api/v2/chats/{chat}/interrupt \
           {
             "error": "string",
             "kind": "instruction_file",
+            "plugin_name": "string",
             "size_bytes": 0,
             "skill_description": "string",
             "skill_name": "string",
@@ -2355,6 +2365,7 @@ curl -X POST http://coder-server:8080/api/v2/chats/{chat}/interrupt \
       {
         "error": "string",
         "kind": "instruction_file",
+        "plugin_name": "string",
         "size_bytes": 0,
         "skill_description": "string",
         "skill_name": "string",
@@ -3373,6 +3384,7 @@ curl -X POST http://coder-server:8080/api/v2/chats/{chat}/reconcile-invalid \
           {
             "error": "string",
             "kind": "instruction_file",
+            "plugin_name": "string",
             "size_bytes": 0,
             "skill_description": "string",
             "skill_name": "string",
@@ -3487,6 +3499,7 @@ curl -X POST http://coder-server:8080/api/v2/chats/{chat}/reconcile-invalid \
       {
         "error": "string",
         "kind": "instruction_file",
+        "plugin_name": "string",
         "size_bytes": 0,
         "skill_description": "string",
         "skill_name": "string",
