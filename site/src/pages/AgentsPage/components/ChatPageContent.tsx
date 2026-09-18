@@ -70,6 +70,7 @@ import {
 	buildStreamTools,
 	excludeDurableCallResults,
 } from "./ChatConversation/streamState";
+import type { EditingTarget } from "./ChatConversation/types";
 import { useOnRenderProfiler } from "./ChatConversation/useOnRenderProfiler";
 import type { SkillMetadata } from "./ChatMessageInput/SkillsTriggerMenu";
 import { ChatMessageScroller } from "./ChatMessageScroller";
@@ -319,8 +320,8 @@ type ChatPageInputProps = {
 		serializedEditorState: string,
 		hasFileReferences: boolean,
 	) => void;
-	isEditing: boolean;
-	onCancelHistoryEdit: () => void;
+	editingTarget: EditingTarget | null;
+	onCancelEdit: () => void;
 	// File parts from the message being edited, converted to
 	// File objects and pre-populated into attachments.
 	editingFileBlocks?: readonly TypesGen.ChatMessagePart[];
@@ -370,8 +371,8 @@ export const ChatPageInput: React.FC<ChatPageInputProps> = ({
 	initialEditorState,
 	remountKey,
 	onContentChange,
-	isEditing,
-	onCancelHistoryEdit,
+	editingTarget,
+	onCancelEdit,
 	editingFileBlocks,
 	mcpServers,
 	selectedMCPServerIds,
@@ -480,6 +481,7 @@ export const ChatPageInput: React.FC<ChatPageInputProps> = ({
 		setUploadStates: setEditUploadStates,
 		resetAttachments: resetEditAttachments,
 	} = editAttachments;
+	const isEditing = editingTarget !== null;
 	const wasEditingRef = useRef(isEditing);
 	const modeAttachments = isEditing ? editAttachments : composeAttachments;
 	const {
@@ -810,8 +812,8 @@ export const ChatPageInput: React.FC<ChatPageInputProps> = ({
 			queuedMessages={queuedMessages}
 			onDeleteQueuedMessage={onDeleteQueuedMessage}
 			onPromoteQueuedMessage={onPromoteQueuedMessage}
-			isEditingHistoryMessage={isEditing}
-			onCancelHistoryEdit={onCancelHistoryEdit}
+			editingKind={editingTarget?.kind}
+			onCancelEdit={onCancelEdit}
 			userPromptHistory={userPromptHistory}
 			isDisabled={isInputDisabled}
 			isReadOnly={isReadOnly}
