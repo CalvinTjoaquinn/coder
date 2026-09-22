@@ -2,11 +2,18 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/xerrors"
+
 	"cdr.dev/slog/v3"
+	"github.com/coder/coder/v2/aibridge"
 	"github.com/coder/coder/v2/aibridge/keypool"
+	"github.com/coder/coder/v2/aibridge/metrics"
 	"github.com/coder/coder/v2/aibridge/provider"
 	"github.com/coder/coder/v2/aibridge/routing"
 )
@@ -33,15 +40,37 @@ var _ http.Handler = (*Router)(nil)
 // names must be valid and unique.
 //
 // Each configured-but-disabled provider serves a 503 sentinel on every path
-// under its name. Enabled providers have no routes registered yet, so their
-// requests reach the catch-all 404.
-func NewRouter(providers []provider.Provider, logger slog.Logger) (*Router, error) {
+// under its name. Enabled providers use the existing passthrough handler for
+// passthrough routes; bridged routes validate requests but still return 404.
+func NewRouter(providers []provider.Provider, logger slog.Logger, m *metrics.Metrics, tracer trace.Tracer) (*Router, error) {
 	if err := provider.ValidateProviders(providers); err != nil {
 		return nil, err
 	}
 
 	snapshot := slices.Clone(providers)
 	mux := routing.NewProviderMux(snapshot, logger)
+	for _, prov := range snapshot {
+		if !prov.Enabled() {
+			continue
+		}
+
+		for _, path := range prov.BridgedRoutes() {
+			route, err := url.JoinPath(prov.RoutePrefix(), path)
+			if err != nil {
+				return nil, xerrors.Errorf("configure provider %q bridged route: %w", prov.Name(), err)
+			}
+			mux.Handle(route, newForwardingHandler(prov, logger, tracer))
+		}
+
+		passthrough := aibridge.NewPassthroughRouter(prov, logger.Named(fmt.Sprintf("passthrough.%s", prov.Name())), m, tracer)
+		for _, path := range prov.PassthroughRoutes() {
+			route, err := url.JoinPath(prov.RoutePrefix(), path)
+			if err != nil {
+				return nil, xerrors.Errorf("configure provider %q passthrough route: %w", prov.Name(), err)
+			}
+			mux.Handle(route, http.StripPrefix(prov.RoutePrefix(), passthrough))
+		}
+	}
 
 	return &Router{
 		mux:       mux,

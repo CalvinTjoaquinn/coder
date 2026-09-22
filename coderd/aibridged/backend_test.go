@@ -186,7 +186,7 @@ func TestBackendMode_Interception(t *testing.T) {
 	}
 }
 
-// Proxy mode returns 503 until providers load, then 404 for unregistered routes.
+// Proxy mode returns 503 until providers load, then 404 for bridged placeholders.
 func TestBackendMode_ProxyWhenNoMCPConfigs(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +210,7 @@ func TestBackendMode_ProxyWhenNoMCPConfigs(t *testing.T) {
 	h, err = f.srv.GetRequestHandler(ctx, aibridged.Request{})
 	require.NoError(t, err)
 	rec = serveHandler(t, h, "/openai/v1/chat/completions")
-	require.Equal(t, http.StatusNotFound, rec.Code, "the router has no provider routes registered yet")
+	require.Equal(t, http.StatusNotFound, rec.Code, "bridged routes still use the placeholder handler")
 	requireKeyPoolState(t, f.srv, 1, "openai", "valid")
 }
 

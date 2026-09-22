@@ -372,7 +372,7 @@ func (s *Server) ReplaceProviders(ctx context.Context, providers []aibridge.Prov
 		current.pool.ReplaceProviders(providers)
 		return nil
 	}
-	router, err := proxy.NewRouter(providers, s.logger)
+	router, err := proxy.NewRouter(providers, s.logger, s.metrics, s.tracer)
 	if err != nil {
 		return xerrors.Errorf("create proxy router: %w", err)
 	}
