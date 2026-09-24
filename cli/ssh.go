@@ -540,7 +540,7 @@ func (r *RootCmd) ssh() *serpent.Command {
 			}
 
 			if stdio {
-				rawSSH, err := conn.SSHUpgrade(ctx)
+				rawSSH, err := conn.SSH(ctx)
 				if err != nil {
 					return xerrors.Errorf("connect SSH: %w", err)
 				}
@@ -569,7 +569,7 @@ func (r *RootCmd) ssh() *serpent.Command {
 				return nil
 			}
 
-			sshClient, err := conn.SSHClientUpgrade(ctx)
+			sshClient, err := conn.SSHClient(ctx)
 			if err != nil {
 				return xerrors.Errorf("ssh client: %w", err)
 			}
