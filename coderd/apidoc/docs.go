@@ -1618,6 +1618,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/codersdk.Chat"
                         }
                     },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
                     "413": {
                         "description": "Request body exceeds 256 KiB",
                         "schema": {
