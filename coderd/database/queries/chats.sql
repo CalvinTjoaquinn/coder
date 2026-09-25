@@ -1016,8 +1016,8 @@ FROM inserted
 ORDER BY id;
 
 -- name: UpdateChatTitleByID :one
--- Refuses the write and returns sql.ErrNoRows unless the current source
--- is fallback or the incoming source is user.
+-- Writes only when the current source is fallback or the incoming source
+-- is user.
 WITH updated_chat AS (
 UPDATE
     chats
