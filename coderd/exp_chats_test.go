@@ -6690,7 +6690,7 @@ func TestPatchChat(t *testing.T) {
 			require.NoError(t, err)
 
 			err = client.UpdateChat(ctx, chat.ID, codersdk.UpdateChatRequest{
-				Title: ptr.Ref("steady title"),
+				Title: new("steady title"),
 			})
 			require.NoError(t, err)
 
@@ -6700,7 +6700,7 @@ func TestPatchChat(t *testing.T) {
 			require.WithinDuration(t, past, updated.UpdatedAt, time.Second)
 
 			err = client.UpdateChat(ctx, chat.ID, codersdk.UpdateChatRequest{
-				Title: ptr.Ref("renamed in place"),
+				Title: new("renamed in place"),
 			})
 			require.NoError(t, err)
 
@@ -10941,13 +10941,12 @@ func TestPostChats_UserTitle(t *testing.T) {
 	const prompt = "automatic title generation please"
 	ctx := testutil.Context(t, testutil.WaitLong)
 
-	var titleRequests atomic.Int32
 	baseURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
 		if req.Stream {
 			return chattest.OpenAIStreamingResponse(chattest.OpenAITextChunks("Hello from test server.")...)
 		}
 		if bytes.Contains(req.RawBody, []byte("propose_title")) {
-			titleRequests.Add(1)
+			t.Error("automatic title generation ran for a chat created with a title")
 		}
 		return chattest.OpenAINonStreamingResponse(`{"title": "Generated Title"}`)
 	})
@@ -10980,7 +10979,6 @@ func TestPostChats_UserTitle(t *testing.T) {
 	settled := coderdtest.WaitForChatSettled(ctx, t, api, chat.ID)
 	require.Equal(t, userTitle, settled.Title)
 	require.Equal(t, database.ChatTitleSourceUser, settled.TitleSource)
-	require.Zero(t, titleRequests.Load())
 }
 
 func TestPostChats_AutomaticTitleGenerationPasteOnly(t *testing.T) {
