@@ -9766,46 +9766,6 @@ func (q *sqlQuerier) GetChatQueuedMessages(ctx context.Context, chatID uuid.UUID
 	return items, nil
 }
 
-const getChatQueuedMessagesByPosition = `-- name: GetChatQueuedMessagesByPosition :many
-SELECT id, chat_id, content, created_at, model_config_id, position, created_by, reasoning_effort, editing_since FROM chat_queued_messages
-WHERE chat_id = $1::uuid
-ORDER BY position ASC, id ASC
-`
-
-// Returns queued messages in state-machine order (position ASC, id ASC).
-func (q *sqlQuerier) GetChatQueuedMessagesByPosition(ctx context.Context, chatID uuid.UUID) ([]ChatQueuedMessage, error) {
-	rows, err := q.db.QueryContext(ctx, getChatQueuedMessagesByPosition, chatID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ChatQueuedMessage
-	for rows.Next() {
-		var i ChatQueuedMessage
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChatID,
-			&i.Content,
-			&i.CreatedAt,
-			&i.ModelConfigID,
-			&i.Position,
-			&i.CreatedBy,
-			&i.ReasoningEffort,
-			&i.EditingSince,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getChatStreamSyncRows = `-- name: GetChatStreamSyncRows :many
 SELECT
     id,
@@ -10893,7 +10853,7 @@ WHERE
 //     disappeared).
 //  3. Waiting chats with a non-empty queue and stale updated_at
 //     (deferred-promote stranding when the worker dies before its
-//     post-cancel cleanup runs). Paused chats are excluded.
+//     post-cancel cleanup runs).
 func (q *sqlQuerier) GetStaleChats(ctx context.Context, staleThreshold time.Time) ([]Chat, error) {
 	rows, err := q.db.QueryContext(ctx, getStaleChats, staleThreshold)
 	if err != nil {
