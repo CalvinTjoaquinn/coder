@@ -7778,7 +7778,8 @@ WITH to_archive AS (
       AND c.parent_chat_id IS NULL -- roots only
       -- Redundant filter helps the planner use the partial index on created_at.
       AND c.created_at < $1::timestamptz
-      -- Statuses the state machine refuses to archive. Add new busy or paused statuses here.
+      -- Matches the root status list in
+      -- GetAutoArchiveInactiveChatCandidates.
       AND c.status NOT IN ('running', 'interrupting', 'requires_action', 'paused')
       AND COALESCE(activity.last_activity_at, c.created_at) < $1::timestamptz
     -- Sorting by created_at lets Postgres drive the scan from the
@@ -8277,7 +8278,6 @@ SELECT id, owner_id, workspace_id, title, status, worker_id, started_at, heartbe
 FROM chats_expanded
 WHERE agent_id = $1::uuid
     AND archived = false
-    -- Active statuses only: waiting, running, requires_action, paused.
     -- Excludes error (terminal state) and interrupting.
     AND status IN ('waiting', 'running', 'requires_action', 'paused')
 ORDER BY updated_at DESC
@@ -8371,11 +8371,26 @@ WHERE
     AND chats_expanded.pin_order = 0
     AND chats_expanded.parent_chat_id IS NULL
     AND chats_expanded.created_at < $1::timestamptz
+    -- Statuses SetArchived refuses. Archiving a root archives its whole
+    -- family and fails if any unarchived member refuses, so members are
+    -- checked too.
     AND chats_expanded.status NOT IN (
         'running'::chat_status,
         'interrupting'::chat_status,
         'requires_action'::chat_status,
         'paused'::chat_status
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM chats member
+        WHERE member.root_chat_id = chats_expanded.id
+          AND member.archived = false
+          AND member.status IN (
+              'running'::chat_status,
+              'interrupting'::chat_status,
+              'requires_action'::chat_status,
+              'paused'::chat_status
+          )
     )
     AND COALESCE(activity.last_activity_at, chats_expanded.created_at) < $1::timestamptz
 ORDER BY chats_expanded.created_at ASC
