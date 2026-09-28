@@ -40,41 +40,95 @@ func TestMain(m *testing.M) {
 func TestNewServer_ServeClient(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	logger := testutil.Logger(t)
-	s, err := agentssh.NewServer(ctx, logger, prometheus.NewRegistry(), afero.NewMemMapFs(), agentexec.DefaultExecer, nil)
-	require.NoError(t, err)
-	defer s.Close()
-	err = s.UpdateHostSigner(42)
-	assert.NoError(t, err)
+	tests := []struct {
+		name            string
+		clientSessionID string
+	}{
+		{
+			name: "NoClientSessionID",
+		},
+		{
+			name:            "WithClientSessionID",
+			clientSessionID: "0123456789abcdef0123456789abcdef",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+			var (
+				mu          sync.Mutex
+				connects    []agentssh.ConnectionReport
+				disconnects []agentssh.ConnectionReport
+				ctx         = context.Background()
+				logger      = testutil.Logger(t)
+			)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		err := s.Serve(ln)
-		assert.Error(t, err) // Server is closed.
-	}()
+			s, err := agentssh.NewServer(ctx, logger,
+				prometheus.NewRegistry(),
+				afero.NewMemMapFs(),
+				agentexec.DefaultExecer,
+				&agentssh.Config{
+					ReportConnection: func(_ uuid.UUID, report agentssh.ConnectionReport) func(int, string) {
+						mu.Lock()
+						defer mu.Unlock()
+						connects = append(connects, report)
+						return func(int, string) {
+							disconnects = append(disconnects, report)
+						}
+					},
+				},
+			)
+			require.NoError(t, err)
+			defer s.Close()
+			err = s.UpdateHostSigner(42)
+			assert.NoError(t, err)
 
-	c := sshClient(t, ln.Addr().String())
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
 
-	var b bytes.Buffer
-	sess, err := c.NewSession()
-	require.NoError(t, err)
-	sess.Stdout = &b
-	err = sess.Start("echo hello")
-	require.NoError(t, err)
+			if tc.clientSessionID != "" {
+				ln = &wrappedListener{
+					ln,
+					tc.clientSessionID,
+				}
+			}
 
-	err = sess.Wait()
-	require.NoError(t, err)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				err := s.Serve(ln)
+				assert.Error(t, err) // Server is closed.
+			}()
 
-	require.Equal(t, "hello", strings.TrimSpace(b.String()))
+			c := sshClient(t, ln.Addr().String())
 
-	err = s.Close()
-	require.NoError(t, err)
-	<-done
+			var b bytes.Buffer
+			sess, err := c.NewSession()
+			require.NoError(t, err)
+			sess.Stdout = &b
+			err = sess.Start("echo hello")
+			require.NoError(t, err)
+
+			err = sess.Wait()
+			require.NoError(t, err)
+
+			require.Equal(t, "hello", strings.TrimSpace(b.String()))
+
+			err = s.Close()
+			require.NoError(t, err)
+			<-done
+
+			// The server will not close until the disconnect has been reported, so
+			// these reports should be populated and safe to access now.
+			require.Len(t, connects, 1)
+			require.Len(t, disconnects, 1)
+			// We only need to check the connect report's client session ID;
+			// disconnect inherit the connect report's ID via the closure, so they
+			// will always be the same.
+			require.Equal(t, tc.clientSessionID, connects[0].ClientSessionID, "connect client session id")
+		})
+	}
 }
 
 // wrappedListener wraps a net.Listener to augment all connections with the
@@ -97,61 +151,6 @@ func (ln *wrappedListener) Accept() (net.Conn, error) {
 		Conn:            conn,
 		clientSessionID: ln.clientSessionID,
 	}, err
-}
-
-func TestNewServer_UpgradeClient(t *testing.T) {
-	t.Parallel()
-
-	var gotClientSessionID string
-	ctx := context.Background()
-	logger := testutil.Logger(t)
-	s, err := agentssh.NewServer(ctx, logger, prometheus.NewRegistry(), afero.NewMemMapFs(), agentexec.DefaultExecer, &agentssh.Config{
-		ReportConnection: func(_ uuid.UUID, report agentssh.ConnectionReport) func(int, string) {
-			gotClientSessionID = report.ClientSessionID
-			return func(int, string) {}
-		},
-	})
-	require.NoError(t, err)
-	defer s.Close()
-	err = s.UpdateHostSigner(42)
-	assert.NoError(t, err)
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
-
-	clientSessionID := "0123456789abcdef0123456789abcdef"
-	wln := wrappedListener{
-		ln,
-		clientSessionID,
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		err := s.Serve(&wln)
-		assert.Error(t, err) // Server is closed.
-	}()
-
-	c := sshClient(t, ln.Addr().String())
-
-	var b bytes.Buffer
-	sess, err := c.NewSession()
-	require.NoError(t, err)
-	sess.Stdout = &b
-	err = sess.Start("echo hello")
-	require.NoError(t, err)
-
-	err = sess.Wait()
-	require.NoError(t, err)
-
-	require.Equal(t, "hello", strings.TrimSpace(b.String()))
-
-	err = s.Close()
-	require.NoError(t, err)
-	<-done
-
-	require.Equal(t, clientSessionID, gotClientSessionID)
 }
 
 func TestNewServer_ExecuteShebang(t *testing.T) {
