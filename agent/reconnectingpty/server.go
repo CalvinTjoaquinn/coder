@@ -21,7 +21,7 @@ import (
 	"github.com/coder/coder/v2/codersdk/workspacesdk"
 )
 
-type reportConnectionFunc func(id uuid.UUID, ip string) (disconnected func(code int, reason string))
+type reportConnectionFunc func(id uuid.UUID, ip string, clientSessionID string) (disconnected func(code int, reason string))
 
 type Server struct {
 	logger           slog.Logger
@@ -44,7 +44,7 @@ func NewServer(logger slog.Logger, commandCreator *agentssh.Server, reportConnec
 	timeout time.Duration, opts ...func(*Server),
 ) *Server {
 	if reportConnection == nil {
-		reportConnection = func(uuid.UUID, string) func(int, string) {
+		reportConnection = func(uuid.UUID, string, string) func(int, string) {
 			return func(int, string) {}
 		}
 	}
@@ -71,9 +71,11 @@ func (s *Server) Serve(ctx, hardCtx context.Context, l net.Listener) (retErr err
 			retErr = err
 			break
 		}
+		clientSessionID := agentssh.ClientSessionIDFromConn(conn)
 		clog := s.logger.With(
 			slog.F("remote", conn.RemoteAddr()),
-			slog.F("local", conn.LocalAddr()))
+			slog.F("local", conn.LocalAddr()),
+			slog.F("client_session_id", clientSessionID))
 		clog.Info(ctx, "accepted conn")
 
 		// It's not safe to assume RemoteAddr() returns a non-nil value. slog.F usage is fine because it correctly
@@ -86,7 +88,7 @@ func (s *Server) Serve(ctx, hardCtx context.Context, l net.Listener) (retErr err
 		}
 
 		wg.Add(1)
-		disconnected := s.reportConnection(uuid.New(), remoteAddrString)
+		disconnected := s.reportConnection(uuid.New(), remoteAddrString, clientSessionID)
 		closed := make(chan struct{})
 		go func() {
 			defer wg.Done()
