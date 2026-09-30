@@ -83,6 +83,27 @@ func TestInboxNotification_Watch(t *testing.T) {
 		}
 	})
 
+	t.Run("nok - missing scope", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, nil)
+		firstUser := coderdtest.CreateFirstUser(t, client)
+		client, _ = coderdtest.CreateAnotherUser(t, client, firstUser.OrganizationID)
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+		token, err := client.CreateToken(ctx, codersdk.Me, codersdk.CreateTokenRequest{
+			Scopes: []codersdk.APIKeyScope{codersdk.APIKeyScopeWorkspaceRead},
+		})
+		require.NoError(t, err)
+		client.SetSessionToken(token.Key)
+
+		resp, err := client.Request(ctx, http.MethodGet, "/api/v2/notifications/inbox/watch", nil)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
 	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
 
@@ -98,13 +119,18 @@ func TestInboxNotification_Watch(t *testing.T) {
 		firstUser := coderdtest.CreateFirstUser(t, firstClient)
 		member, memberClient := coderdtest.CreateAnotherUser(t, firstClient, firstUser.OrganizationID, rbac.RoleTemplateAdmin())
 
+		token, err := member.CreateToken(ctx, codersdk.Me, codersdk.CreateTokenRequest{
+			Scopes: []codersdk.APIKeyScope{codersdk.APIKeyScopeInboxNotificationRead},
+		})
+		require.NoError(t, err)
+
 		u, err := member.URL.Parse("/api/v2/notifications/inbox/watch")
 		require.NoError(t, err)
 
 		// nolint:bodyclose
 		wsConn, resp, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{
 			HTTPHeader: http.Header{
-				"Coder-Session-Token": []string{member.SessionToken()},
+				"Coder-Session-Token": []string{token.Key},
 			},
 		})
 		if err != nil {

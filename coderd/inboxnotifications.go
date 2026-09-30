@@ -18,6 +18,8 @@ import (
 	"github.com/coder/coder/v2/coderd/httpmw/loggermw"
 	"github.com/coder/coder/v2/coderd/notifications"
 	"github.com/coder/coder/v2/coderd/pubsub"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/rbac/policy"
 	markdown "github.com/coder/coder/v2/coderd/render"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/websocket"
@@ -149,6 +151,12 @@ func (api *API) watchInboxNotifications(rw http.ResponseWriter, r *http.Request)
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "starting_before query parameter should be any of 'all', 'read', 'unread'.",
 		})
+		return
+	}
+
+	// Refuse before upgrading, not on the first message.
+	if !api.Authorize(r, policy.ActionRead, rbac.ResourceInboxNotification.WithOwner(apikey.UserID.String())) {
+		httpapi.Forbidden(rw)
 		return
 	}
 

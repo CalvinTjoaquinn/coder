@@ -46,6 +46,10 @@ var externalLowLevel = map[ScopeName]struct{}{
 	"file:create": {},
 	"file:*":      {},
 
+	// Inbox notifications
+	"inbox_notification:read":   {},
+	"inbox_notification:update": {},
+
 	// Users
 	"user:read":            {},
 	"user:read_personal":   {},
