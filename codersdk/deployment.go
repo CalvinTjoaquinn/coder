@@ -5498,23 +5498,24 @@ type Experiment string
 
 const (
 	// Add new experiments here!
-	ExperimentExample                   Experiment = "example"                     // This isn't used for anything.
-	ExperimentAutoFillParameters        Experiment = "auto-fill-parameters"        // This should not be taken out of experiments until we have redesigned the feature.
-	ExperimentNotifications             Experiment = "notifications"               // Sends notifications via SMTP and webhooks following certain events.
-	ExperimentWorkspaceUsage            Experiment = "workspace-usage"             // Enables the new workspace usage tracking.
-	ExperimentMCPServerHTTP             Experiment = "mcp-server-http"             // Enables the MCP HTTP server functionality.
-	ExperimentMCPToolSearch             Experiment = "mcp-tool-search"             // Defers MCP tool schemas behind a searchable catalog in agent chats.
-	ExperimentWorkspaceBuildUpdates     Experiment = "workspace-build-updates"     // Enables publishing workspace build updates to the all builds pubsub channel.
-	ExperimentNoNATSPubsub              Experiment = "no_nats_pubsub"              // Disables the embedded NATS pubsub, falling back to PostgreSQL pubsub.
-	ExperimentWorkspaceCapableLicensing Experiment = "workspace-capable-licensing" // Counts only users holding the workspace-create permission toward the license seat limit.
-	ExperimentAIGatewaySeatExclusion    Experiment = "ai-gateway-seat-exclusion"   // Excludes AI Gateway (AI Bridge) usage from AI Governance seat consumption.
-	ExperimentAIGatewayReverseProxy     Experiment = "ai-gateway-reverse-proxy"    // Uses stateless reverse proxy routing when MCP injection is not configured.
-	ExperimentChatAdvisor               Experiment = "chat-advisor"                // Enables the advisor tool for root agent chats.
-	ExperimentChatVirtualDesktop        Experiment = "chat-virtual-desktop"        // Enables virtual desktop and computer use provider for agents.
-	ExperimentAgentLifecycleHooks       Experiment = "agent-lifecycle-hooks"       // Enables chat lifecycle hook webhooks for agent chats.
-	ExperimentChatInlineMCPServers      Experiment = "chat-inline-mcp-servers"     // Enables inline MCP servers declared on POST /chats.
-	ExperimentEnableAIWorkspaceDebug    Experiment = "enable-ai-workspace-debug"   // Enables debugging failed workspace builds with Coder Agents.
-	ExperimentChatBoard                 Experiment = "chat-board"                  // Offers the Coder Agents chat board as a per-browser opt-in.
+	ExperimentExample                     Experiment = "example"                        // This isn't used for anything.
+	ExperimentAutoFillParameters          Experiment = "auto-fill-parameters"           // This should not be taken out of experiments until we have redesigned the feature.
+	ExperimentNotifications               Experiment = "notifications"                  // Sends notifications via SMTP and webhooks following certain events.
+	ExperimentWorkspaceUsage              Experiment = "workspace-usage"                // Enables the new workspace usage tracking.
+	ExperimentMCPServerHTTP               Experiment = "mcp-server-http"                // Enables the MCP HTTP server functionality.
+	ExperimentMCPToolSearch               Experiment = "mcp-tool-search"                // Defers MCP tool schemas behind a searchable catalog in agent chats.
+	ExperimentWorkspaceBuildUpdates       Experiment = "workspace-build-updates"        // Enables publishing workspace build updates to the all builds pubsub channel.
+	ExperimentNoNATSPubsub                Experiment = "no_nats_pubsub"                 // Disables the embedded NATS pubsub, falling back to PostgreSQL pubsub.
+	ExperimentWorkspaceCapableLicensing   Experiment = "workspace-capable-licensing"    // Counts only users holding the workspace-create permission toward the license seat limit.
+	ExperimentAIGatewaySeatExclusion      Experiment = "ai-gateway-seat-exclusion"      // Excludes AI Gateway (AI Bridge) usage from AI Governance seat consumption.
+	ExperimentAIGatewayReverseProxy       Experiment = "ai-gateway-reverse-proxy"       // Uses stateless reverse proxy routing when MCP injection is not configured.
+	ExperimentAIGatewayResponsesWebSocket Experiment = "ai-gateway-responses-websocket" // Enables OpenAI Responses WebSocket mode in AI Gateway.
+	ExperimentChatAdvisor                 Experiment = "chat-advisor"                   // Enables the advisor tool for root agent chats.
+	ExperimentChatVirtualDesktop          Experiment = "chat-virtual-desktop"           // Enables virtual desktop and computer use provider for agents.
+	ExperimentAgentLifecycleHooks         Experiment = "agent-lifecycle-hooks"          // Enables chat lifecycle hook webhooks for agent chats.
+	ExperimentChatInlineMCPServers        Experiment = "chat-inline-mcp-servers"        // Enables inline MCP servers declared on POST /chats.
+	ExperimentEnableAIWorkspaceDebug      Experiment = "enable-ai-workspace-debug"      // Enables debugging failed workspace builds with Coder Agents.
+	ExperimentChatBoard                   Experiment = "chat-board"                     // Offers the Coder Agents chat board as a per-browser opt-in.
 )
 
 func (e Experiment) DisplayName() string {
@@ -5539,6 +5540,8 @@ func (e Experiment) DisplayName() string {
 		return "AI Gateway Seat Exclusion"
 	case ExperimentAIGatewayReverseProxy:
 		return "AI Gateway Reverse Proxy"
+	case ExperimentAIGatewayResponsesWebSocket:
+		return "AI Gateway Responses WebSocket"
 	case ExperimentChatAdvisor:
 		return "Chat Advisor"
 	case ExperimentChatVirtualDesktop:
@@ -5572,6 +5575,7 @@ var ExperimentsKnown = Experiments{
 	ExperimentWorkspaceCapableLicensing,
 	ExperimentAIGatewaySeatExclusion,
 	ExperimentAIGatewayReverseProxy,
+	ExperimentAIGatewayResponsesWebSocket,
 	ExperimentChatAdvisor,
 	ExperimentChatVirtualDesktop,
 	ExperimentAgentLifecycleHooks,
@@ -5592,6 +5596,7 @@ var ExperimentsSafe = Experiments{}
 var ExperimentsUserScoped = Experiments{
 	ExperimentExample,
 	ExperimentMCPToolSearch,
+	ExperimentAIGatewayResponsesWebSocket,
 }
 
 // Experiments is a list of experiments.
