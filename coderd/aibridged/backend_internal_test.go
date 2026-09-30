@@ -18,6 +18,8 @@ import (
 	"github.com/coder/coder/v2/aibridge"
 	"github.com/coder/coder/v2/aibridge/config"
 	"github.com/coder/coder/v2/aibridge/keypool"
+	"github.com/coder/coder/v2/aibridge/recorder"
+	"github.com/coder/coder/v2/aibridge/utils"
 	"github.com/coder/coder/v2/aibridge/x/proxy"
 	"github.com/coder/coder/v2/testutil"
 	"github.com/coder/quartz"
@@ -73,7 +75,16 @@ func TestServerKeyPoolStateCollector(t *testing.T) {
 	thirdProvider := newProvider(t, "third")
 	firstRouter, err := proxy.NewRouter([]aibridge.Provider{thirdProvider}, slogtest.Make(t, nil), nil, otel.Tracer(t.Name()))
 	require.NoError(t, err)
-	server.backend.Store(&backend{proxyRouter: firstRouter, keyPools: firstRouter.KeyPools})
+	server.backend.Store(&backend{
+		proxyRouter: func(rec recorder.Recorder) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server.serveProxy(w, r, func(processCtx context.Context, w http.ResponseWriter, r *http.Request, tasks *utils.ConcurrentGroup) {
+					firstRouter.Serve(processCtx, w, r, rec, tasks)
+				})
+			})
+		},
+		keyPools: firstRouter.KeyPools,
+	})
 
 	metrics = gather(t, registry)
 	require.False(t, testutil.PromGaugeGathered(t, metrics, "key_pool_state", "second", "valid"))
@@ -82,7 +93,16 @@ func TestServerKeyPoolStateCollector(t *testing.T) {
 	fourthProvider := newProvider(t, "fourth")
 	secondRouter, err := proxy.NewRouter([]aibridge.Provider{fourthProvider}, slogtest.Make(t, nil), nil, otel.Tracer(t.Name()))
 	require.NoError(t, err)
-	server.backend.Store(&backend{proxyRouter: secondRouter, keyPools: secondRouter.KeyPools})
+	server.backend.Store(&backend{
+		proxyRouter: func(rec recorder.Recorder) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server.serveProxy(w, r, func(processCtx context.Context, w http.ResponseWriter, r *http.Request, tasks *utils.ConcurrentGroup) {
+					secondRouter.Serve(processCtx, w, r, rec, tasks)
+				})
+			})
+		},
+		keyPools: secondRouter.KeyPools,
+	})
 
 	metrics = gather(t, registry)
 	require.False(t, testutil.PromGaugeGathered(t, metrics, "key_pool_state", "third", "valid"))
@@ -126,6 +146,7 @@ func TestServerShutdownMode(t *testing.T) {
 			lifecycleCtx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			calls := 0
+			idleCloses := 0
 			pool := &shutdownPool{shutdown: func(got context.Context) error {
 				require.Equal(t, ctx, got)
 				calls++
@@ -140,6 +161,8 @@ func TestServerShutdownMode(t *testing.T) {
 				current := &backend{}
 				if tc.interception {
 					current.pool = pool
+				} else {
+					current.closeIdleConnections = func() { idleCloses++ }
 				}
 				server.backend.Store(current)
 			}
@@ -156,6 +179,11 @@ func TestServerShutdownMode(t *testing.T) {
 			}
 			_ = server.Shutdown(ctx)
 			require.Equal(t, expectedCalls, calls, "owned pool is shut down only once")
+			wantCloses := 0
+			if tc.selected && !tc.interception {
+				wantCloses = 1
+			}
+			require.Equal(t, wantCloses, idleCloses)
 		})
 	}
 }
@@ -198,17 +226,50 @@ func TestServerShutdownDoesNotWaitForStalledConnectLoop(t *testing.T) {
 	testCtx := testutil.Context(t, testutil.WaitShort)
 	testutil.TryReceive(testCtx, t, dialStarted)
 
+	idleClosed := make(chan struct{})
+	server.backend.Store(&backend{closeIdleConnections: func() { close(idleClosed) }})
 	shutdownCtx, cancelShutdown := context.WithCancel(t.Context())
 	cancelShutdown()
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- server.Shutdown(shutdownCtx) }()
 	require.ErrorIs(t, testutil.RequireReceive(testCtx, t, shutdownDone), context.Canceled)
 	require.ErrorIs(t, context.Cause(lifecycleCtx), ErrShutdown)
+	testutil.TryReceive(testCtx, t, idleClosed)
 	select {
 	case <-connectDone:
 		t.Fatal("connect loop exited before the stalled dial was released")
 	default:
 	}
+}
+
+func TestReplaceProvidersClosesRetiredIdleConnections(t *testing.T) {
+	t.Parallel()
+	handler, started, release := blockingHandler()
+	release = sync.OnceFunc(release)
+	defer release()
+	server := newProxyTestServer(t, handler)
+	closes := 0
+	server.backend.Load().closeIdleConnections = func() { closes++ }
+	ctx := testutil.Context(t, testutil.WaitShort)
+	retained, err := server.GetRequestHandler(ctx, Request{})
+	require.NoError(t, err)
+	done := serveAsync(retained)
+	testutil.RequireReceive(ctx, t, started)
+
+	err = server.ReplaceProviders(ctx, []aibridge.Provider{aibridge.NewOpenAIProvider(config.OpenAI{Name: "invalid/name"})})
+	require.Error(t, err)
+	require.Zero(t, closes, "failed construction must not retire the current snapshot")
+	require.NoError(t, server.ReplaceProviders(ctx, nil))
+	require.Equal(t, 1, closes)
+	select {
+	case <-done:
+		t.Fatal("retiring idle connections interrupted an admitted request")
+	default:
+	}
+	release()
+	require.Equal(t, http.StatusNoContent, testutil.RequireReceive(ctx, t, done))
+	require.NoError(t, server.Shutdown(ctx))
+	require.Equal(t, 1, closes)
 }
 
 type blockingNameProvider struct {
@@ -276,7 +337,7 @@ func TestReplaceProvidersDuringShutdownKeepsAdmissionClosed(t *testing.T) {
 		handler http.Handler
 	}{
 		{name: "Retained", handler: retained},
-		{name: "CurrentSnapshot", handler: server.backend.Load().proxyRouter},
+		{name: "CurrentSnapshot", handler: server.backend.Load().proxyRouter(nil)},
 		{name: "AcquiredAfterShutdown", handler: acquired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

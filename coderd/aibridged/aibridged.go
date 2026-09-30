@@ -16,6 +16,8 @@ import (
 	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/aibridge"
 	"github.com/coder/coder/v2/aibridge/keypool"
+	"github.com/coder/coder/v2/aibridge/recorder"
+	"github.com/coder/coder/v2/aibridge/utils"
 	"github.com/coder/coder/v2/aibridge/x/proxy"
 	"github.com/coder/coder/v2/coderd/aibridged/proto"
 	"github.com/coder/coder/v2/codersdk"
@@ -45,8 +47,9 @@ type Server struct {
 	backend   atomic.Pointer[backend]
 	backendMu sync.Mutex
 
-	// inflight tracks proxy requests across router snapshots. Shutdown waits
-	// for completion or cancels their contexts when its deadline expires.
+	// inflight tracks proxy requests and their processing tasks across router
+	// snapshots. Shutdown waits for completion or cancels their contexts when
+	// its deadline expires.
 	inflight *aibridge.InflightGate
 
 	// reverseProxyExp is the experiment flag. Proxy mode also requires no MCP configs.
@@ -69,7 +72,7 @@ type Server struct {
 	// cancelFn closes the lifecycleCtx with the reason it closed.
 	cancelFn context.CancelCauseFunc
 
-	// poolOptions configures the interception pool created at startup.
+	// poolOptions configures the interception pool and both modes' record policy.
 	poolOptions PoolOptions
 
 	shutdownOnce sync.Once
@@ -89,9 +92,10 @@ func WithPoolOptions(options PoolOptions) ServerOption {
 // Its fields are fixed after publication. Both pool and proxyRouter are nil when
 // proxy mode is selected but providers are not yet loaded.
 type backend struct {
-	pool        Pooler                 // RequestBridge pool.
-	proxyRouter http.Handler           // Proxy router for this snapshot.
-	keyPools    func() []*keypool.Pool // Current key pools for metric scrapes.
+	pool                 Pooler                               // RequestBridge pool.
+	proxyRouter          func(recorder.Recorder) http.Handler // Binds a request recorder to this snapshot.
+	keyPools             func() []*keypool.Pool               // Current key pools for metric scrapes.
+	closeIdleConnections func()                               // Releases this snapshot's owned idle transports.
 }
 
 // New starts a gateway server. Creates a request pool only when interception
@@ -135,8 +139,9 @@ func New(ctx context.Context, rpcDialer Dialer, logger slog.Logger, tracer trace
 
 // Connect establishes a connection to coderd.
 func (s *Server) connect() {
-	defer s.logger.Debug(s.lifecycleCtx, "connect loop exited")
+	// Log before Done so nothing is logged after Shutdown observes loop exit.
 	defer s.wg.Done()
+	defer s.logger.Debug(s.lifecycleCtx, "connect loop exited")
 	defer func() {
 		if s.lifecycleCtx.Err() == nil {
 			s.cancelFn(xerrors.New("connect loop exited"))
@@ -263,7 +268,7 @@ func (s *Server) initializeBackend(ctx context.Context, client DRPCClient) error
 
 	// Otherwise, use proxy mode.
 	s.backend.Store(&backend{})
-	s.logger.Warn(ctx, "reverse proxy routing is not yet functional")
+	s.logger.Warn(ctx, "experimental proxy mode records request lifecycle only; model and token accounting are not yet supported")
 	return nil
 }
 
@@ -336,7 +341,22 @@ func (s *Server) GetRequestHandler(ctx context.Context, req Request) (http.Handl
 	if current.proxyRouter == nil {
 		return http.HandlerFunc(notReadyHandler), nil
 	}
-	return current.proxyRouter, nil
+	var middleware []recorder.Middleware
+	if s.poolOptions.DisableContentRecording {
+		middleware = append(middleware, recorder.WithoutRecords(recorder.DisabledRecords{
+			PromptUsage:  true,
+			ToolUsage:    true,
+			ModelThought: true,
+		}))
+	}
+	rec := aibridge.NewRecorder(
+		s.logger.Named("recorder"), s.tracer, req.APIKeyID, s.poolOptions.StructuredLogging,
+		recorder.NewDRPCRecorder(req.APIKeyID, func(recordCtx context.Context) (proto.DRPCRecorderClient, error) {
+			return s.Client(recordCtx)
+		}),
+		middleware...,
+	)
+	return current.proxyRouter(rec), nil
 }
 
 // Ready reports whether the server currently has an active DRPC connection to coderd.
@@ -376,8 +396,58 @@ func (s *Server) ReplaceProviders(ctx context.Context, providers []aibridge.Prov
 	if err != nil {
 		return xerrors.Errorf("create proxy router: %w", err)
 	}
-	s.backend.Store(&backend{proxyRouter: s.inflight.Middleware(router), keyPools: router.KeyPools})
+	next := &backend{
+		proxyRouter: func(rec recorder.Recorder) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				s.serveProxy(w, r, func(processCtx context.Context, w http.ResponseWriter, r *http.Request, tasks *utils.ConcurrentGroup) {
+					router.Serve(processCtx, w, r, rec, tasks)
+				})
+			})
+		},
+		keyPools:             router.KeyPools,
+		closeIdleConnections: sync.OnceFunc(router.CloseIdleConnections),
+	}
+	s.backend.Store(next)
+	if current.closeIdleConnections != nil {
+		current.closeIdleConnections()
+	}
+	// Shutdown does not wait for provider construction. If it raced publication,
+	// release the new snapshot too; the shared admission gate remains closed.
+	if s.isShutdown() {
+		next.closeIdleConnections()
+	}
 	return nil
+}
+
+// serveProxy admits a proxy request once and holds that admission until serve
+// returns and every task it registered finishes. Forwarding uses a context
+// bound to the request; tasks get processCtx, which keeps request values but
+// outlives the handler until forced shutdown. serve must register all tasks
+// before returning, and the handler never waits for them.
+func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request, serve func(processCtx context.Context, w http.ResponseWriter, r *http.Request, tasks *utils.ConcurrentGroup)) {
+	release, ok := s.inflight.Admit()
+	if !ok {
+		shuttingDownHandler(w, r)
+		return
+	}
+	processCtx, cleanupProcess := s.inflight.RequestContext(context.WithoutCancel(r.Context()))
+	tasks := utils.NewConcurrentGroup()
+	// Tasks exist only for registered bridged routes, so the path is bounded.
+	// Headers and bodies may carry credentials and are never logged here.
+	fields := []slog.Field{slog.F("method", r.Method), slog.F("path", r.URL.Path)}
+	// Deferred so a panicking handler still releases admission after its tasks.
+	defer func() {
+		go func() {
+			if err := tasks.Wait(); err != nil {
+				s.logger.Warn(processCtx, "proxy request processing failed", append(fields, slog.Error(err))...)
+			}
+			cleanupProcess()
+			release()
+		}()
+	}()
+	ctx, cleanup := s.inflight.RequestContext(r.Context())
+	defer cleanup()
+	serve(processCtx, w, r.WithContext(ctx), tasks)
 }
 
 // PoolOptions reports the options the published interception pool was built
@@ -420,6 +490,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	s.shutdownOnce.Do(func() {
 		s.shuttingDown.Store(true)
+		defer func() {
+			if current := s.backend.Load(); current != nil && current.closeIdleConnections != nil {
+				current.closeIdleConnections()
+			}
+		}()
 
 		// Safe to call in both modes. The proxy gate is idle in interception mode.
 		err = s.inflight.Shutdown(ctx)

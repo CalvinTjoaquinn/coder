@@ -2,6 +2,7 @@ package aibridged
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,8 +13,11 @@ import (
 	"golang.org/x/xerrors"
 	"storj.io/drpc"
 
+	"cdr.dev/slog/v3"
 	"cdr.dev/slog/v3/sloggers/slogtest"
 	"github.com/coder/coder/v2/aibridge"
+	"github.com/coder/coder/v2/aibridge/recorder"
+	"github.com/coder/coder/v2/aibridge/utils"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
 )
@@ -166,7 +170,9 @@ func TestServerProxy_CancelsWithLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = tracker.Close() })
 	handler, started, release := blockingHandler()
 	t.Cleanup(release)
-	tracker.backend.Store(&backend{proxyRouter: tracker.inflight.Middleware(handler)})
+	tracker.backend.Store(&backend{proxyRouter: func(recorder.Recorder) http.Handler {
+		return tracker.inflight.Middleware(handler)
+	}})
 	acquired, err := tracker.GetRequestHandler(t.Context(), Request{})
 	require.NoError(t, err)
 	done := serveAsync(acquired)
@@ -282,7 +288,124 @@ func newProxyTestServer(t *testing.T, handler http.Handler) *Server {
 		logger:       slogtest.Make(t, nil),
 		inflight:     aibridge.NewInflightGate(slogtest.Make(t, nil)),
 	}
-	s.backend.Store(&backend{proxyRouter: s.inflight.Middleware(handler)})
+	s.backend.Store(&backend{proxyRouter: func(recorder.Recorder) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.serveProxy(w, r, func(_ context.Context, w http.ResponseWriter, r *http.Request, _ *utils.ConcurrentGroup) {
+				handler.ServeHTTP(w, r)
+			})
+		})
+	}})
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+// TestServerProxy_ProcessingOutlivesHandler asserts processing tasks do not
+// delay the response, keep request values, and hold shutdown drainage while
+// DRPC stays live. Forced shutdown cancels their context.
+func TestServerProxy_ProcessingOutlivesHandler(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{}
+	for _, tc := range []struct {
+		name   string
+		panics bool
+		forced bool
+	}{
+		{name: "Graceful"},
+		{name: "Panic", panics: true},
+		{name: "Forced", forced: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			testCtx := testutil.Context(t, testutil.WaitShort)
+			taskStarted := make(chan context.Context, 1)
+			releaseTask := make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseTask) })
+			t.Cleanup(release)
+			tracker := newProxyTestServer(t, nil)
+			sink := testutil.NewFakeSink(t)
+			tracker.logger = sink.Logger()
+			tracker.backend.Store(&backend{proxyRouter: func(recorder.Recorder) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					tracker.serveProxy(w, r, func(processCtx context.Context, w http.ResponseWriter, _ *http.Request, tasks *utils.ConcurrentGroup) {
+						tasks.Go(func() error {
+							taskStarted <- processCtx
+							select {
+							case <-releaseTask:
+								return nil
+							case <-processCtx.Done():
+								return processCtx.Err()
+							}
+						})
+						if tc.panics {
+							panic(http.ErrAbortHandler)
+						}
+						w.WriteHeader(http.StatusNoContent)
+					})
+				})
+			}})
+			handler, err := tracker.GetRequestHandler(testCtx, Request{})
+			require.NoError(t, err)
+
+			// The handler returns while its task is still blocked.
+			reqCtx, cancelReq := context.WithCancel(context.WithValue(testCtx, ctxKey{}, "attribution"))
+			rec := httptest.NewRecorder()
+			served := make(chan any, 1)
+			go func() {
+				defer func() { served <- recover() }()
+				req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(reqCtx)
+				req.Header.Set("Authorization", "Bearer request-secret")
+				handler.ServeHTTP(rec, req)
+			}()
+			if panicValue := testutil.RequireReceive(testCtx, t, served); tc.panics {
+				require.Equal(t, http.ErrAbortHandler, panicValue)
+			} else {
+				require.Nil(t, panicValue)
+				require.Equal(t, http.StatusNoContent, rec.Code)
+			}
+			cancelReq()
+			processCtx := testutil.RequireReceive(testCtx, t, taskStarted)
+			require.Equal(t, "attribution", processCtx.Value(ctxKey{}))
+			require.NoError(t, processCtx.Err(), "request cancellation must not cancel processing")
+
+			shutdownCtx, cancelShutdown := context.WithCancel(testCtx)
+			defer cancelShutdown()
+			shutdownDone := make(chan error, 1)
+			go func() { shutdownDone <- tracker.Shutdown(shutdownCtx) }()
+			require.Eventually(t, tracker.shuttingDown.Load, testutil.WaitShort, testutil.IntervalFast)
+			select {
+			case err := <-shutdownDone:
+				t.Fatalf("shutdown returned before processing finished: %v", err)
+			default:
+			}
+			require.NoError(t, tracker.lifecycleCtx.Err(), "DRPC must remain available while processing drains")
+
+			if tc.forced {
+				cancelShutdown()
+				require.ErrorIs(t, testutil.RequireReceive(testCtx, t, shutdownDone), context.Canceled)
+				testutil.TryReceive(testCtx, t, processCtx.Done())
+				// The canceled task's error is logged with bounded request fields only.
+				var entry slog.SinkEntry
+				require.Eventually(t, func() bool {
+					entries := sink.Entries(func(e slog.SinkEntry) bool { return e.Message == "proxy request processing failed" })
+					if len(entries) != 1 {
+						return false
+					}
+					entry = entries[0]
+					return true
+				}, testutil.WaitShort, testutil.IntervalFast)
+				names := make([]string, 0, len(entry.Fields))
+				for _, field := range entry.Fields {
+					names = append(names, field.Name)
+					require.NotContains(t, fmt.Sprint(field.Value), "request-secret")
+				}
+				require.ElementsMatch(t, []string{"method", "path", "error"}, names)
+			} else {
+				release()
+				require.NoError(t, testutil.RequireReceive(testCtx, t, shutdownDone))
+			}
+			require.ErrorIs(t, context.Cause(tracker.lifecycleCtx), ErrShutdown)
+		})
+	}
 }
