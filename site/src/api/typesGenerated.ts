@@ -1537,6 +1537,7 @@ export const AnthropicInlineImageCapBytes = 5242880;
 // From codersdk/appname.go
 export type AppFamilyName =
 	| "jetbrains"
+	| "port_forwarding"
 	| "reconnecting_pty"
 	| "sftp"
 	| "ssh"
@@ -1545,6 +1546,7 @@ export type AppFamilyName =
 
 export const AppFamilyNames: AppFamilyName[] = [
 	"jetbrains",
+	"port_forwarding",
 	"reconnecting_pty",
 	"sftp",
 	"ssh",

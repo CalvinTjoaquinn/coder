@@ -19317,6 +19317,7 @@ const docTemplate = `{
                 "jetbrains",
                 "ssh",
                 "reconnecting_pty",
+                "port_forwarding",
                 "sftp",
                 "unknown"
             ],
@@ -19325,6 +19326,7 @@ const docTemplate = `{
                 "AppFamilyJetBrains",
                 "AppFamilySSH",
                 "AppFamilyReconnectingPTY",
+                "AppFamilyPortForwarding",
                 "AppFamilySFTP",
                 "AppFamilyUnknown"
             ]
