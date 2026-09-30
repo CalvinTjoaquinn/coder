@@ -31,6 +31,19 @@ const (
 	itemMessage        = "message"
 )
 
+// Relevant reports whether OnEvent acts on events of the given type, so
+// callers can skip others, such as output deltas, without changing the
+// records or the outcome. Pass the event JSON's "type" field when known:
+// OnEvent prefers it over the transport event name. An empty type is
+// relevant, since OnEvent then reads the type from the JSON.
+func Relevant(eventType string) bool {
+	switch eventType {
+	case "", eventCreated, eventInProgress, eventQueued, eventCompleted, eventIncomplete, eventFailed, eventError:
+		return true
+	}
+	return false
+}
+
 // hostedToolItems are output item types for tools the provider executes
 // itself. They carry no uniform argument payload but are recorded for
 // visibility, matching the interceptor.
@@ -73,8 +86,8 @@ type ResponseExtraction struct {
 	// recorded is set once a terminal response object was recorded.
 	recorded bool
 	// settled is set once any terminal event, response object or error,
-	// was observed. Later errors are parse notes and do not change the
-	// outcome.
+	// was observed. The first one decides the outcome: later errors are
+	// parse notes, and a later terminal response is only recorded.
 	settled bool
 	notes   extract.ParseNotes
 }
@@ -85,6 +98,10 @@ var _ extract.ResponseExtraction = (*ResponseExtraction)(nil)
 // response to rec. ctx scopes the recorder calls and is usually the request
 // context. prompt is the request's extract.RequestFacts.Prompt; an empty
 // prompt is not recorded.
+//
+// Recorder calls run synchronously inside OnEvent and ProcessBlocking and
+// are not bounded per call: rec, or ctx, must enforce a deadline, or a
+// slow recorder stalls the caller.
 func NewResponseExtraction(ctx context.Context, logger slog.Logger, rec recorder.Recorder, interceptionID, prompt string) *ResponseExtraction {
 	if rec == nil {
 		panic("responses: NewResponseExtraction requires a recorder")
@@ -211,18 +228,23 @@ func (e *ResponseExtraction) finish(status extract.TerminalStatus, r gjson.Resul
 		return
 	}
 	e.recorded = true
+	// A terminal response after an error event is still recorded, since
+	// the usage was consumed, but the earlier error stays the outcome.
+	erroredFirst := e.settled
 	e.settled = true
 	e.observeResponseID(r)
 
-	e.outcome.Terminal = extract.Terminal{Status: status}
-	switch status {
-	case extract.TerminalIncomplete:
-		e.outcome.Terminal.Reason = r.Get("incomplete_details.reason").String()
-	case extract.TerminalFailed:
-		errObj := r.Get("error")
-		code := errObj.Get("code").String()
-		e.outcome.Terminal.Reason = code
-		e.outcome.Err = providerError(0, errObj.Get("message").String(), errObj.Get("type").String(), code, "response failed")
+	if !erroredFirst {
+		e.outcome.Terminal = extract.Terminal{Status: status}
+		switch status {
+		case extract.TerminalIncomplete:
+			e.outcome.Terminal.Reason = r.Get("incomplete_details.reason").String()
+		case extract.TerminalFailed:
+			errObj := r.Get("error")
+			code := errObj.Get("code").String()
+			e.outcome.Terminal.Reason = code
+			e.outcome.Err = providerError(failedStatus(code), errObj.Get("message").String(), errObj.Get("type").String(), code, "response failed")
+		}
 	}
 
 	// Records use the terminal object's own ID and model, as the
@@ -284,6 +306,9 @@ func (e *ResponseExtraction) httpError(status int, raw []byte) {
 	var errObj gjson.Result
 	switch {
 	case len(raw) == 0:
+	case len(raw) > extract.MaxBodyBytes:
+		// The status still classifies the error; the body is not read.
+		e.notes.Addf(e.ctx, "skipped error body: exceeds %d bytes", extract.MaxBodyBytes)
 	case !gjson.ValidBytes(raw):
 		e.notes.Addf(e.ctx, "error body is not valid JSON (%d bytes)", len(raw))
 	default:
@@ -294,10 +319,27 @@ func (e *ResponseExtraction) httpError(status int, raw []byte) {
 	e.outcome.Err = providerError(status, errObj.Get("message").String(), errObj.Get("type").String(), code, http.StatusText(status))
 }
 
+// failedStatus maps a response.failed error code, which carries no HTTP
+// status, to the status the equivalent HTTP error would have, so the error
+// categorizes by what failed. The WebSocket relay uses the same mapping.
+// A missing code maps to 0, which categorizes as unknown.
+func failedStatus(code string) int {
+	switch code {
+	case intercept.OpenAIErrCodeRateLimit:
+		return http.StatusTooManyRequests
+	case intercept.OpenAIErrCodeServer:
+		return http.StatusInternalServerError
+	case "":
+		return 0
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 // providerError builds the OpenAI-shaped error the interceptors return, so
-// provider.OpenAI categorizes it by status code. Mid-stream errors carry no
-// HTTP status unless the event reports one; status 0 categorizes as
-// unknown, as the SDK stream errors the interceptor returns today do.
+// provider.OpenAI categorizes it by status code. Mid-stream "error" events
+// carry no HTTP status unless the event reports one; status 0 categorizes
+// as unknown, as the SDK stream errors the interceptor returns today do.
 func providerError(status int, msg, errType, code, fallbackMsg string) *intercept.ResponseError {
 	if msg == "" {
 		msg = fallbackMsg

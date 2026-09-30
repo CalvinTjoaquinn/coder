@@ -152,6 +152,13 @@ func TestResponseExtractionTerminalErrors(t *testing.T) {
 			wantType: recorder.ErrorTypeServerError, todayErr: sdkErr(500), wantMsg: "Internal Server Error", wantNotes: true,
 		},
 		{
+			// An oversized error body is not parsed, but its status still
+			// classifies the error.
+			name:     "http_500_oversized",
+			feed:     blocking(500, `{"error":{"message":"`+strings.Repeat("x", extract.MaxBodyBytes)+`"}}`),
+			wantType: recorder.ErrorTypeServerError, todayErr: sdkErr(500), wantMsg: "Internal Server Error", wantNotes: true,
+		},
+		{
 			// Statusless mid-stream errors categorize as unknown, like the
 			// SDK stream errors the interceptor returns today.
 			name:     "sse_error_event",
@@ -169,9 +176,26 @@ func TestResponseExtractionTerminalErrors(t *testing.T) {
 			wantType: recorder.ErrorTypeRateLimited, wantMsg: "slow down", wantCode: "rate_limit_exceeded",
 		},
 		{
+			// response.failed carries no HTTP status: its error code maps
+			// to one, as in the WebSocket relay.
 			name:     "response_failed",
 			feed:     event(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_error","message":"The model failed."},"output":[]}}`),
-			wantType: recorder.ErrorTypeUnknown, wantMsg: "The model failed.", wantCode: "server_error",
+			wantType: recorder.ErrorTypeServerError, wantMsg: "The model failed.", wantCode: "server_error",
+		},
+		{
+			name:     "response_failed_rate_limit",
+			feed:     event(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"rate_limit_exceeded","message":"slow down"},"output":[]}}`),
+			wantType: recorder.ErrorTypeRateLimited, todayErr: sdkErr(429), wantMsg: "slow down", wantCode: "rate_limit_exceeded",
+		},
+		{
+			name:     "response_failed_other_code",
+			feed:     event(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"invalid_prompt","message":"bad prompt"},"output":[]}}`),
+			wantType: recorder.ErrorTypeBadRequest, wantMsg: "bad prompt", wantCode: "invalid_prompt",
+		},
+		{
+			name:     "response_failed_no_code",
+			feed:     event(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"The model failed."},"output":[]}}`),
+			wantType: recorder.ErrorTypeUnknown, wantMsg: "The model failed.",
 		},
 	}
 
@@ -198,6 +222,19 @@ func TestResponseExtractionTerminalErrors(t *testing.T) {
 				require.Equal(t, todayType, gotType, "categorized differently from the interceptor path")
 			}
 		})
+	}
+}
+
+// TestRelevant checks that every event type OnEvent acts on is relevant,
+// and that deltas are not.
+func TestRelevant(t *testing.T) {
+	t.Parallel()
+
+	for _, typ := range []string{"", "response.created", "response.in_progress", "response.queued", "response.completed", "response.incomplete", "response.failed", "error"} {
+		require.True(t, responses.Relevant(typ), typ)
+	}
+	for _, typ := range []string{"response.output_text.delta", "response.output_item.done", "response.reasoning_summary_text.delta"} {
+		require.False(t, responses.Relevant(typ), typ)
 	}
 }
 
@@ -232,8 +269,10 @@ func TestResponseExtractionFailOpen(t *testing.T) {
 		// wantUsage is whether the completed response was still recorded.
 		wantUsage bool
 		wantID    string
-		// clean is set for the one valid input, which must add no notes.
+		// clean is set for valid inputs, which must add no notes.
 		clean bool
+		// wantErr is whether the outcome carries a provider error.
+		wantErr bool
 	}{
 		{
 			name: "malformed_event",
@@ -272,6 +311,20 @@ func TestResponseExtractionFailOpen(t *testing.T) {
 				require.Equal(t, extract.TerminalCompleted, h.ext.Outcome().Terminal.Status)
 			},
 			wantUsage: true, wantID: "resp_ws",
+		},
+		{
+			// A terminal response after an error event is still recorded,
+			// but the earlier error stays the outcome.
+			name: "terminal_after_error",
+			run: func(h harness) {
+				h.ext.OnEvent("", []byte(wsFrames[0]))
+				h.ext.OnEvent("", []byte(`{"type":"error","code":"server_error","message":"boom"}`))
+				h.ext.OnEvent("", completed)
+				out := h.ext.Outcome()
+				require.Equal(t, extract.TerminalFailed, out.Terminal.Status)
+				require.Error(t, out.Err)
+			},
+			wantUsage: true, wantID: "resp_ws", wantErr: true, clean: true,
 		},
 		{
 			// A stream cut mid-event keeps the response ID and records the
@@ -315,7 +368,7 @@ func TestResponseExtractionFailOpen(t *testing.T) {
 			tc.run(h)
 			out := h.ext.Outcome()
 			require.Equal(t, tc.clean, len(h.notes.list()) == 0, "notes: %v", h.notes.list())
-			require.NoError(t, out.Err)
+			require.Equal(t, tc.wantErr, out.Err != nil, "err: %v", out.Err)
 			require.Equal(t, tc.wantUsage, len(h.rec.RecordedTokenUsages()) == 1)
 			require.Equal(t, tc.wantID, out.ResponseID)
 		})
